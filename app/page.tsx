@@ -1,4 +1,3 @@
-
 "use client";
 
 import { useEffect, useRef, useState } from "react";
@@ -8,17 +7,18 @@ import {
   Plus,
   Send,
   Sparkles,
-  User,
+  
+  Square,
 } from "lucide-react";
+import { BiSolidFace } from "react-icons/bi";
 
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import {
-  Avatar,
-  AvatarFallback,
-} from "@/components/ui/avatar";
-
+import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import ChatInput from "@/components/chat/chat-input";
 type Message = {
   role: "user" | "assistant";
   content: string;
@@ -34,8 +34,9 @@ export default function Home() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({
@@ -49,10 +50,10 @@ export default function Home() {
 
     if (!content || isLoading) return;
 
-    const nextMessages: Message[] = [
-      ...messages,
-      { role: "user", content },
-    ];
+    const nextMessages: Message[] = [...messages, { role: "user", content }];
+
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
 
     setMessages(nextMessages);
     setInput("");
@@ -67,28 +68,39 @@ export default function Home() {
         body: JSON.stringify({
           messages: nextMessages,
         }),
+        signal: controller.signal,
       });
 
-      const data = await response.json();
+      const data: { reply?: string; error?: string } = await response.json();
 
       if (!response.ok) {
-        throw new Error(
-          data.error || "Something went wrong."
-        );
+        throw new Error(data.error || "Something went wrong.");
       }
+
+      // Ignore a response if this request was cancelled.
+      if (controller.signal.aborted) return;
 
       setMessages([
         ...nextMessages,
         {
           role: "assistant",
-          content: data.answer,
+          content: data.reply ?? "",
         },
       ]);
     } catch (error) {
+      if (controller.signal.aborted) {
+        setMessages([
+          ...nextMessages,
+          {
+            role: "assistant",
+            content: "Request stopped.",
+          },
+        ]);
+        return;
+      }
+
       const errorMessage =
-        error instanceof Error
-          ? error.message
-          : "Please try again.";
+        error instanceof Error ? error.message : "Please try again.";
 
       setMessages([
         ...nextMessages,
@@ -98,8 +110,15 @@ export default function Home() {
         },
       ]);
     } finally {
-      setIsLoading(false);
+      if (abortControllerRef.current === controller) {
+        abortControllerRef.current = null;
+        setIsLoading(false);
+      }
     }
+  }
+
+  function stopGeneration() {
+    abortControllerRef.current?.abort();
   }
 
   function clearChat() {
@@ -108,6 +127,11 @@ export default function Home() {
     setMessages([]);
     setInput("");
   }
+  useEffect(() => {
+    if (!isLoading) {
+      inputRef.current?.focus();
+    }
+  }, [isLoading]);
 
   return (
     <main className="flex h-dvh flex-col bg-background">
@@ -119,10 +143,10 @@ export default function Home() {
 
           <div>
             <h1 className="font-semibold tracking-tight">
-              RAG Learning Assistant
+              Learning Assistant
             </h1>
             <p className="text-xs text-muted-foreground">
-              Powered by Gemini
+              Powered by Llama 3.2 3B · Ollama
             </p>
           </div>
         </div>
@@ -143,8 +167,8 @@ export default function Home() {
           <div className="space-y-6 px-4 py-6 sm:px-6">
             {messages.length === 0 ? (
               <div className="flex min-h-[55vh] flex-col items-center justify-center text-center">
-                <div className="mb-5 flex size-16 items-center justify-center rounded-2xl bg-primary/10">
-                  <Sparkles className="size-8 text-primary" />
+                <div className="mb-5 flex size-16 items-center justify-center rounded-full bg-primary/10">
+                  <Bot className="size-10 text-primary" />
                 </div>
 
                 <h2 className="text-2xl font-semibold tracking-tight sm:text-3xl">
@@ -152,8 +176,7 @@ export default function Home() {
                 </h2>
 
                 <p className="mt-3 max-w-md text-sm text-muted-foreground">
-                  Ask questions about AI, RAG, programming,
-                  or anything you want to understand.
+                  Ask questions about anything you like.
                 </p>
 
                 <div className="mt-8 grid w-full max-w-lg gap-2">
@@ -176,37 +199,61 @@ export default function Home() {
                 <div
                   key={`${index}-${message.role}`}
                   className={`flex gap-3 ${
-                    message.role === "user"
-                      ? "flex-row-reverse"
-                      : "flex-row"
+                    message.role === "user" ? "flex-row-reverse" : "flex-row"
                   }`}
                 >
-                  <Avatar className="size-8 shrink-0">
+                  <Avatar className="size-8 shrink-0 bg-black!">
                     <AvatarFallback
                       className={
-                        message.role === "assistant"
-                          ? "bg-primary text-primary-foreground"
-                          : "bg-muted"
+                        message.role === "assistant" 
+                          ? " text-primary-foreground bg-black!"
+                          : "bg-muted bg-black!"
                       }
                     >
                       {message.role === "assistant" ? (
-                        <Bot className="size-4" />
+                        <Bot className="size-5" />
                       ) : (
-                        <User className="size-4" />
+                        <BiSolidFace className="size-5 bg-black text-white" />
                       )}
                     </AvatarFallback>
                   </Avatar>
 
                   <div
-                    className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm leading-7 sm:max-w-[80%] ${
+                    className={`max-w-[85%] min-w-0 rounded-2xl px-4 py-2 text-sm leading-7 sm:max-w-[80%] ${
                       message.role === "user"
                         ? "bg-primary text-primary-foreground"
                         : "bg-muted"
                     }`}
                   >
-                    <p className="whitespace-pre-wrap break-words">
-                      {message.content}
-                    </p>
+                    {message.role === "user" ? (
+                      <p className="whitespace-pre-wrap break-words">
+                        {message.content}
+                      </p>
+                    ) : (
+                      <div
+                        className="
+                                break-words
+                                [&_h1]:mb-3 [&_h1]:mt-5 [&_h1]:text-xl [&_h1]:font-bold
+                                [&_h2]:mb-2 [&_h2]:mt-5 [&_h2]:text-lg [&_h2]:font-semibold
+                                [&_h3]:mb-2 [&_h3]:mt-4 [&_h3]:font-semibold
+                                [&_p]:my-2
+                                [&_strong]:font-semibold
+                                [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-6
+                                [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-6
+                                [&_li]:my-1
+                                [&_blockquote]:border-l-2 [&_blockquote]:pl-4 [&_blockquote]:italic
+                                [&_pre]:my-3 [&_pre]:overflow-x-auto [&_pre]:rounded-lg [&_pre]:bg-background [&_pre]:p-3
+                                [&_code]:rounded [&_code]:bg-background/70 [&_code]:px-1
+                                [&_pre_code]:bg-transparent [&_pre_code]:p-0
+                                [&_a]:text-primary [&_a]:underline
+                                [&_hr]:my-4 [&_hr]:border-border
+                                "
+                      >
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                          {message.content}
+                        </ReactMarkdown>
+                      </div>
+                    )}
                   </div>
                 </div>
               ))
@@ -221,10 +268,10 @@ export default function Home() {
                 </Avatar>
 
                 <div className="flex items-center gap-2 rounded-2xl bg-muted px-4 py-3 text-sm text-muted-foreground">
+                  <span className="text-black">Daya pata lgao </span>
                   <span className="size-2 animate-bounce rounded-full bg-current" />
                   <span className="size-2 animate-bounce rounded-full bg-current [animation-delay:150ms]" />
                   <span className="size-2 animate-bounce rounded-full bg-current [animation-delay:300ms]" />
-                  
                 </div>
               </div>
             )}
@@ -243,6 +290,7 @@ export default function Home() {
           >
             <Textarea
               value={input}
+              ref={inputRef}
               onChange={(event) => setInput(event.target.value)}
               onKeyDown={(event) => {
                 if (
@@ -262,13 +310,19 @@ export default function Home() {
             />
 
             <Button
-              type="submit"
+              type={isLoading ? "button" : "submit"}
               size="icon"
               className="absolute bottom-2 right-2 rounded-xl"
-              disabled={!input.trim() || isLoading}
-              aria-label="Send message"
+              disabled={!isLoading && !input.trim()}
+              onClick={isLoading ? stopGeneration : undefined}
+              aria-label={isLoading ? "Stop response" : "Send message"}
+              title={isLoading ? "Stop response" : "Send message"}
             >
-              <Send className="size-4" />
+              {isLoading ? (
+                <Square className="size-4 fill-current" />
+              ) : (
+                <Send className="size-4" />
+              )}
             </Button>
           </form>
 
