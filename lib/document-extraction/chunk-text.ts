@@ -10,8 +10,114 @@ type ChunkTextOptions = {
   pageNumber?: number | null;
 };
 
-const DEFAULT_MAX_CHUNK_SIZE = 2800;
-const DEFAULT_OVERLAP = 400;
+const DEFAULT_MAX_CHUNK_SIZE = 1200;
+const DEFAULT_OVERLAP = 150;
+
+// Common document headings, including resume sections.
+const SECTION_HEADING =
+  /^(SUMMARY|PROFILE|ABOUT ME|EXPERIENCE|WORK EXPERIENCE|EMPLOYMENT HISTORY|EDUCATION|PROJECTS|PERSONAL PROJECTS|SKILLS|TECHNICAL SKILLS|CERTIFICATIONS|LANGUAGES|HOBBIES|INTERESTS|CONTACT|OBJECTIVE|ACHIEVEMENTS|RESPONSIBILITIES|QUALIFICATIONS)\s*:?$/i;
+
+function splitIntoSections(text: string): string[] {
+  const lines = text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  const sections: string[] = [];
+  let currentSection: string[] = [];
+
+  for (const line of lines) {
+    const isHeading = SECTION_HEADING.test(line);
+
+    if (isHeading && currentSection.length > 0) {
+      sections.push(currentSection.join("\n"));
+      currentSection = [];
+    }
+
+    currentSection.push(line);
+  }
+
+  if (currentSection.length > 0) {
+    sections.push(currentSection.join("\n"));
+  }
+
+  return sections;
+}
+
+function splitLongSection(
+  text: string,
+  maxChunkSize: number,
+  overlap: number,
+): string[] {
+  const paragraphs = text
+    .split(/\n{2,}/)
+    .map((paragraph) => paragraph.trim())
+    .filter(Boolean);
+
+  const chunks: string[] = [];
+  let currentChunk = "";
+
+  for (const paragraph of paragraphs) {
+    // Split exceptionally long paragraphs by sentence.
+    if (paragraph.length > maxChunkSize) {
+      if (currentChunk) {
+        chunks.push(currentChunk);
+        currentChunk = "";
+      }
+
+      const sentences = paragraph.match(/[^.!?]+[.!?]+|[^.!?]+$/g) ?? [
+        paragraph,
+      ];
+
+      let sentenceChunk = "";
+
+      for (const sentence of sentences) {
+        const candidate = sentenceChunk
+          ? `${sentenceChunk} ${sentence.trim()}`
+          : sentence.trim();
+
+        if (candidate.length > maxChunkSize && sentenceChunk) {
+          chunks.push(sentenceChunk.trim());
+
+          const previousWords = sentenceChunk
+            .trim()
+            .split(/\s+/)
+            .slice(-20)
+            .join(" ");
+
+          sentenceChunk = previousWords
+            ? `${previousWords} ${sentence.trim()}`
+            : sentence.trim();
+        } else {
+          sentenceChunk = candidate;
+        }
+      }
+
+      if (sentenceChunk.trim()) {
+        chunks.push(sentenceChunk.trim());
+      }
+
+      continue;
+    }
+
+    const candidate = currentChunk
+      ? `${currentChunk}\n\n${paragraph}`
+      : paragraph;
+
+    if (candidate.length > maxChunkSize && currentChunk) {
+      chunks.push(currentChunk);
+      currentChunk = paragraph;
+    } else {
+      currentChunk = candidate;
+    }
+  }
+
+  if (currentChunk.trim()) {
+    chunks.push(currentChunk.trim());
+  }
+
+  return chunks;
+}
 
 export function chunkText(
   text: string,
@@ -31,59 +137,32 @@ export function chunkText(
     throw new Error("Invalid chunk size or overlap");
   }
 
-  const normalizedText = text.trim();
+  const normalizedText = text
+    .replace(/\r\n/g, "\n")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 
   if (!normalizedText) return [];
 
+  const sections = splitIntoSections(normalizedText);
   const chunks: DocumentChunk[] = [];
-  let start = 0;
 
-  while (start < normalizedText.length) {
-    let end = Math.min(start + maxChunkSize, normalizedText.length);
+  for (const section of sections) {
+    const sectionChunks = splitLongSection(
+      section,
+      maxChunkSize,
+      overlap,
+    );
 
-    if (end < normalizedText.length) {
-      const minimumBoundary = start + Math.floor(maxChunkSize * 0.6);
+    for (const content of sectionChunks) {
+      if (!content.trim()) continue;
 
-      // Prefer paragraph boundaries.
-      let boundary = normalizedText.lastIndexOf("\n\n", end);
-
-      // Otherwise prefer sentence boundaries.
-      if (boundary < minimumBoundary) {
-        const sentenceMatches = [
-          ...normalizedText.slice(minimumBoundary, end).matchAll(/[.!?]\s/g),
-        ];
-
-        boundary =
-          sentenceMatches.length > 0
-            ? minimumBoundary +
-              sentenceMatches[sentenceMatches.length - 1].index! +
-              1
-            : -1;
-      }
-
-      // Otherwise use a word boundary.
-      if (boundary < minimumBoundary) {
-        boundary = normalizedText.lastIndexOf(" ", end);
-      }
-
-      if (boundary >= minimumBoundary) {
-        end = boundary;
-      }
-    }
-
-    const content = normalizedText.slice(start, end).trim();
-
-    if (content) {
       chunks.push({
-        content,
+        content: content.trim(),
         pageNumber,
       });
     }
-
-    if (end >= normalizedText.length) break;
-
-    // Move backwards to create overlap.
-    start = Math.max(start + 1, end - overlap);
   }
 
   return chunks;

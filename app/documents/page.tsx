@@ -1,23 +1,22 @@
-
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ArrowLeft,
-  Bot,
-  FileText,
-  FileUp,
-  File,
-  Search,
-  Eye,
   BookOpen,
-  Trash2,
+  Check,
+  Eye,
+  FileText,
+  Loader2,
   RefreshCw,
+  Search,
+  Trash2,
   Upload,
+  X,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-
+import { PiRobotThin } from "react-icons/pi";
 type Document = {
   id: string;
   filename: string;
@@ -28,137 +27,304 @@ type Document = {
   created_at: string;
 };
 
+type QueuedFile = {
+  id: string;
+  file: File;
+  status: "ready" | "uploading" | "done" | "error";
+  error?: string;
+};
+
+const ACCEPTED_EXTENSIONS = [".pdf", ".docx", ".txt"];
+const MAX_FILE_SIZE = 5 * 1024 * 1024;
+
+const focusRing =
+  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#E8C468]/60 focus-visible:ring-offset-2 focus-visible:ring-offset-[#0E1420]";
+
+/* ---------- Helpers ---------- */
+
+function formatFileSize(size: string | number | null) {
+  if (size === null || size === undefined) return "N/A";
+  const bytes = Number(size);
+  if (!Number.isFinite(bytes)) return "N/A";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatDate(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "N/A";
+  return date.toLocaleDateString(undefined, {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
+}
+
+function fileKind(typeOrName: string) {
+  const value = typeOrName.toLowerCase();
+
+  if (value === "application/pdf" || value.endsWith(".pdf")) {
+    return {
+      label: "PDF",
+      tint: "border-[#F07167]/20 bg-[#F07167]/10 text-[#F4A09A]",
+    };
+  }
+  if (value.includes("wordprocessingml") || value.endsWith(".docx")) {
+    return {
+      label: "DOCX",
+      tint: "border-[#6C9EFF]/20 bg-[#6C9EFF]/10 text-[#A8C4FF]",
+    };
+  }
+  if (value === "text/plain" || value.endsWith(".txt")) {
+    return {
+      label: "TXT",
+      tint: "border-white/10 bg-white/[0.05] text-[#B7BECC]",
+    };
+  }
+  return {
+    label: value.split("/").pop()?.toUpperCase() || "FILE",
+    tint: "border-white/10 bg-white/[0.05] text-[#B7BECC]",
+  };
+}
+
+function statusStyle(status: string) {
+  const value = status.toLowerCase();
+  const label = value.charAt(0).toUpperCase() + value.slice(1);
+
+  if (["ready", "processed", "completed", "indexed", "done"].includes(value)) {
+    return {
+      label,
+      dot: "bg-[#7FD1A0]",
+      cls: "border-[#7FD1A0]/20 bg-[#7FD1A0]/10 text-[#A6E3BE]",
+    };
+  }
+  if (["failed", "error"].includes(value)) {
+    return {
+      label,
+      dot: "bg-[#F07167]",
+      cls: "border-[#F07167]/20 bg-[#F07167]/10 text-[#F4A09A]",
+    };
+  }
+  if (
+    ["processing", "pending", "uploaded", "queued", "embedding"].includes(value)
+  ) {
+    return {
+      label,
+      dot: "bg-[#E8C468] animate-pulse",
+      cls: "border-[#E8C468]/20 bg-[#E8C468]/10 text-[#F0D58C]",
+    };
+  }
+  return {
+    label,
+    dot: "bg-[#8B94A7]",
+    cls: "border-white/10 bg-white/[0.05] text-[#B7BECC]",
+  };
+}
+
+/* ---------- Page ---------- */
+
 export default function DocumentsPage() {
   const router = useRouter();
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [documents, setDocuments] = useState<Document[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [uploading, setUploading] = useState(false);
-  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+  const [queue, setQueue] = useState<QueuedFile[]>([]);
   const [search, setSearch] = useState("");
+  const [dragging, setDragging] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
-  async function fetchDocuments() {
-    try {
-      setLoading(true);
+  const fetchDocuments = useCallback(
+    async (mode: "initial" | "refresh" = "refresh") => {
+      try {
+        if (mode === "initial") setLoading(true);
+        else setRefreshing(true);
 
-      const response = await fetch("/api/documents");
-      const data = await response.json();
+        const response = await fetch("/api/documents", { cache: "no-store" });
+        const data = await response.json();
 
-      if (!response.ok) {
-        throw new Error(data.message || "Failed to fetch documents");
+        if (!response.ok) {
+          throw new Error(data.message || "Couldn't load your documents.");
+        }
+
+        setDocuments(data.documents ?? []);
+      } catch (error) {
+        toast.error(
+          error instanceof Error
+            ? error.message
+            : "Couldn't load your documents.",
+        );
+      } finally {
+        setLoading(false);
+        setRefreshing(false);
       }
-
-      setDocuments(data.documents);
-    } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "Failed to fetch documents"
-      );
-    } finally {
-      setLoading(false);
-    }
-  }
+    },
+    [],
+  );
 
   useEffect(() => {
-    fetchDocuments();
-  }, []);
+    void fetchDocuments("initial");
+  }, [fetchDocuments]);
+
+  /* ---------- Upload queue ---------- */
+
+  function addFiles(files: FileList | File[]) {
+    const accepted: QueuedFile[] = [];
+
+    for (const file of Array.from(files)) {
+      const extension = `.${file.name.split(".").pop() ?? ""}`.toLowerCase();
+
+      if (!ACCEPTED_EXTENSIONS.includes(extension)) {
+        toast.error(`${file.name} isn't a PDF, DOCX or TXT file.`);
+        continue;
+      }
+      if (file.size > MAX_FILE_SIZE) {
+        toast.error(`${file.name} is larger than 5 MB.`);
+        continue;
+      }
+
+      accepted.push({
+        id: `${file.name}-${file.size}-${file.lastModified}`,
+        file,
+        status: "ready",
+      });
+    }
+
+    if (!accepted.length) return;
+
+    setQueue((prev) => {
+      const existing = new Set(prev.map((item) => item.id));
+      return [...prev, ...accepted.filter((item) => !existing.has(item.id))];
+    });
+  }
+
+  function updateQueueItem(id: string, patch: Partial<QueuedFile>) {
+    setQueue((prev) =>
+      prev.map((item) => (item.id === id ? { ...item, ...patch } : item)),
+    );
+  }
+
+  function removeFromQueue(id: string) {
+    setQueue((prev) => prev.filter((item) => item.id !== id));
+  }
 
   async function handleUpload() {
-    if (!selectedFiles.length || uploading) return;
+    const pending = queue.filter(
+      (item) => item.status === "ready" || item.status === "error",
+    );
+    if (!pending.length || uploading) return;
 
-    try {
-      setUploading(true);
+    setUploading(true);
+    let uploaded = 0;
 
-      let uploadedCount = 0;
+    for (const item of pending) {
+      updateQueueItem(item.id, { status: "uploading", error: undefined });
 
-      for (const file of selectedFiles) {
+      try {
         const formData = new FormData();
-        formData.append("file", file);
+        formData.append("file", item.file);
 
         const response = await fetch("/api/documents/upload", {
           method: "POST",
           body: formData,
         });
-
-        const data = await response.json();
+        const data = await response.json().catch(() => ({}));
 
         if (!response.ok) {
-          throw new Error(data.message || `Failed to upload ${file.name}`);
+          throw new Error(data.message || "Upload failed.");
         }
 
-        uploadedCount++;
+        updateQueueItem(item.id, { status: "done" });
+        uploaded++;
+      } catch (error) {
+        updateQueueItem(item.id, {
+          status: "error",
+          error: error instanceof Error ? error.message : "Upload failed.",
+        });
       }
-
-      toast.success(`${uploadedCount} document(s) uploaded successfully`);
-
-      setSelectedFiles([]);
-      await fetchDocuments();
-    } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "Upload failed"
-      );
-      await fetchDocuments();
-    } finally {
-      setUploading(false);
     }
+
+    setUploading(false);
+
+    if (uploaded > 0) {
+      toast.success(
+        uploaded === 1 ? "Uploaded 1 file" : `Uploaded ${uploaded} files`,
+      );
+      setTimeout(() => {
+        setQueue((prev) => prev.filter((item) => item.status !== "done"));
+      }, 1200);
+    }
+
+    const failed = pending.length - uploaded;
+    if (failed > 0) {
+      toast.error(
+        `${failed} file${failed === 1 ? "" : "s"} didn't upload. Check the list and try again.`,
+      );
+    }
+
+    await fetchDocuments();
   }
 
-  async function handleDelete(id: string, filename: string) {
-    toast.warning(`Delete "${filename}"?`, {
-      description: "This action cannot be undone.",
-      duration: Infinity,
+  /* ---------- Document actions ---------- */
+
+  function handleDelete(document: Document) {
+    toast(`Delete ${document.filename}?`, {
+      description:
+        "The assistant will stop using this file. This can't be undone.",
+      duration: 10000,
       action: {
         label: "Delete",
-        onClick: async () => {
-          try {
-            const response = await fetch("/api/documents", {
-              method: "DELETE",
-              headers: {
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify({ id }),
-            });
-
-            const data = await response.json();
-
-            if (!response.ok) {
-              throw new Error(data.message || "Failed to delete document");
-            }
-
-            setDocuments((previous) =>
-              previous.filter((document) => document.id !== id)
-            );
-
-            toast.success("Document deleted successfully");
-          } catch (error) {
-            toast.error(
-              error instanceof Error ? error.message : "Delete failed"
-            );
-          }
-        },
+        onClick: () => void deleteDocument(document.id),
       },
       cancel: {
-        label: "Cancel",
-        onClick: () => toast.dismiss(),
+        label: "Keep",
+        onClick: () => {},
       },
     });
   }
 
+  async function deleteDocument(id: string) {
+    setDeletingId(id);
+
+    try {
+      const response = await fetch("/api/documents", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id }),
+      });
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        throw new Error(data.message || "Couldn't delete the document.");
+      }
+
+      setDocuments((prev) => prev.filter((doc) => doc.id !== id));
+      toast.success("Document deleted");
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Couldn't delete the document.",
+      );
+    } finally {
+      setDeletingId(null);
+    }
+  }
+
   function handleView(document: Document) {
     if (!document.stored_filename) {
-      toast.error("This document has no uploaded file");
+      toast.error("This document has no file attached.");
       return;
     }
 
-    const fileUrl = `/uploads/${encodeURIComponent(
-      document.stored_filename
-    )}`;
-
+    const fileUrl = `/uploads/${encodeURIComponent(document.stored_filename)}`;
     window.open(fileUrl, "_blank", "noopener,noreferrer");
   }
 
   function handleRead(document: Document) {
     if (!document.stored_filename) {
-      toast.error("This document has no uploaded file");
+      toast.error("This document has no file attached.");
       return;
     }
 
@@ -170,316 +336,430 @@ export default function DocumentsPage() {
       return;
     }
 
-    toast.info(
-      "Reading DOCX content will be available after implementing document extraction."
+    toast.info("Reading DOCX files in the browser isn't available yet.");
+  }
+
+  /* ---------- Derived ---------- */
+
+  const query = search.trim().toLowerCase();
+  const visibleDocuments = documents
+    .filter((doc) => doc.filename.toLowerCase().includes(query))
+    .sort(
+      (a, b) =>
+        new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
     );
-  }
 
-  function formatFileSize(size: string | null) {
-    if (!size) return "N/A";
-
-    const bytes = Number(size);
-
-    if (!Number.isFinite(bytes)) return "N/A";
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(2)} KB`;
-
-    return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
-  }
-
-  function formatFileType(type: string) {
-    if (type === "application/pdf") return "PDF";
-    if (type === "text/plain") return "TXT";
-    if (
-      type ===
-      "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-    ) {
-      return "DOCX";
-    }
-
-    return type.split("/").pop()?.toUpperCase() || "UNKNOWN";
-  }
-
-  const filteredDocuments = documents.filter((document) =>
-    document.filename.toLowerCase().includes(search.toLowerCase())
-  );
+  const pendingCount = queue.filter(
+    (item) => item.status === "ready" || item.status === "error",
+  ).length;
 
   return (
-    <main className="min-h-screen bg-[#0b0d11] text-white">
+    <main className="min-h-dvh bg-[#0E1420] text-[#E7EAF0] selection:bg-[#E8C468]/30">
+      <style>{`
+        @keyframes rowIn {
+          from { opacity: 0; transform: translateY(4px); }
+          to { opacity: 1; transform: none; }
+        }
+        .row-in { animation: rowIn 0.24s cubic-bezier(0.2, 0.7, 0.2, 1) both; }
+        @media (prefers-reduced-motion: reduce) {
+          .row-in { animation: none; }
+        }
+      `}</style>
 
       {/* Header */}
-      <header className="border-b border-white/[0.08] bg-[#0b0d11]">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-5 py-4 md:px-8">
-
+      <header className="sticky top-0 z-20 border-b border-white/[0.06] bg-[#0E1420]/90 backdrop-blur-md">
+        <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-4 sm:px-6">
           <div className="flex items-center gap-3">
-            <div className="flex size-10 items-center justify-center rounded-xl border border-white/10 bg-[#1b202a]">
-              <Bot className="size-6 text-white" />
+            <div className="flex size-9 items-center justify-center rounded-lg bg-[#E8C468] text-[#1A1405]">
+              <PiRobotThin className="size-[25px]" strokeWidth={2.25} />
             </div>
-
-            <div>
-              <h1 className="font-semibold tracking-tight">
+            <div className="leading-tight">
+              <h1 className="text-[15px] font-semibold tracking-tight">
                 Learning Assistant
               </h1>
-              <p className="text-xs text-gray-500">
-                Document Management
-              </p>
+              <p className="text-xs text-[#8B94A7]">Documents</p>
             </div>
           </div>
 
           <button
             type="button"
             onClick={() => router.push("/")}
-            className="flex items-center gap-2 rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-gray-300 transition hover:bg-white/10 hover:text-white"
+            className={`flex h-9 items-center gap-2 rounded-lg border border-white/[0.08] px-3 text-sm transition-colors hover:border-white/[0.16] hover:bg-white/[0.04] ${focusRing}`}
           >
             <ArrowLeft className="size-4" />
-            Back to Chat
+            <span className="hidden sm:inline">Back to chat</span>
           </button>
         </div>
       </header>
 
-      <div className="mx-auto max-w-7xl space-y-8 px-5 py-8 md:px-8 md:py-10">
-
-        {/* Page heading */}
-        <div>
-          <h2 className="text-2xl font-semibold tracking-tight md:text-3xl">
-            Document Management
+      <div className="mx-auto max-w-6xl px-4 py-8 sm:px-6 lg:py-12">
+        {/* Heading */}
+        <div className="max-w-2xl">
+          <h2 className="text-2xl font-semibold tracking-tight sm:text-3xl">
+            Your documents
           </h2>
-          <p className="mt-2 text-sm text-gray-400">
-            Upload, view, read and manage your documents.
+          <p className="mt-2 text-[15px] leading-7 text-[#8B94A7]">
+            The assistant searches these files when you ask a question. Add
+            notes, papers or handouts to get answers grounded in them.
           </p>
         </div>
 
-        {/* Upload section */}
-        <section className="space-y-5 rounded-2xl border border-white/[0.08] bg-[#12161e] p-5 md:p-7">
+        <div className="mt-8 grid items-start gap-6 lg:grid-cols-[340px_minmax(0,1fr)]">
+          {/* Upload panel */}
+          <section className="rounded-2xl border border-white/[0.07] bg-[#141B2A] p-5 lg:sticky lg:top-24">
+            <h3 className="text-[15px] font-semibold">Add documents</h3>
+            <p className="mt-1 text-[13px] text-[#8B94A7]">
+              PDF, DOCX or TXT, up to 5 MB each.
+            </p>
 
-          <div className="flex items-center gap-3">
-            <div className="flex size-11 items-center justify-center rounded-xl border border-white/10 bg-[#202631]">
-              <FileUp className="size-5 text-gray-200" />
-            </div>
-
-            <div>
-              <h3 className="font-semibold text-white">
-                Upload Documents
-              </h3>
-              <p className="mt-1 text-xs text-gray-500">
-                PDF, DOCX and TXT · Maximum 5 MB per file
-              </p>
-            </div>
-          </div>
-
-          {/* File input */}
-          <label className="flex min-h-36 cursor-pointer flex-col items-center justify-center rounded-xl border border-dashed border-white/15 bg-[#0b0d11] px-5 py-7 text-center transition hover:border-white/30 hover:bg-[#11151d]">
-
-            <div className="mb-3 flex size-11 items-center justify-center rounded-full bg-white/[0.06]">
-              <Upload className="size-5 text-gray-300" />
-            </div>
-
-            <span className="text-sm font-medium text-gray-200">
-              Click to select documents
-            </span>
-
-            <span className="mt-1 text-xs text-gray-500">
-              Select multiple files if needed
-            </span>
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              onDragOver={(event) => {
+                event.preventDefault();
+                if (!dragging) setDragging(true);
+              }}
+              onDragLeave={(event) => {
+                if (
+                  !event.currentTarget.contains(event.relatedTarget as Node)
+                ) {
+                  setDragging(false);
+                }
+              }}
+              onDrop={(event) => {
+                event.preventDefault();
+                setDragging(false);
+                if (event.dataTransfer.files?.length) {
+                  addFiles(event.dataTransfer.files);
+                }
+              }}
+              className={`mt-4 flex w-full flex-col items-center justify-center rounded-xl border border-dashed px-4 py-8 text-center transition-all duration-200 ${focusRing} ${
+                dragging
+                  ? "scale-[1.01] border-[#E8C468]/70 bg-[#E8C468]/[0.06]"
+                  : "border-white/[0.14] bg-[#0E1420] hover:border-white/[0.28] hover:bg-[#111827]"
+              }`}
+            >
+              <span
+                className={`flex size-10 items-center justify-center rounded-full transition-colors ${
+                  dragging
+                    ? "bg-[#E8C468] text-[#1A1405]"
+                    : "bg-white/[0.06] text-[#B7BECC]"
+                }`}
+              >
+                <Upload className="size-[18px]" />
+              </span>
+              <span className="mt-3 text-sm font-medium">
+                {dragging ? "Drop to add" : "Drop files here or browse"}
+              </span>
+              <span className="mt-1 text-xs text-[#5D667A]">
+                You can add several at once
+              </span>
+            </button>
 
             <input
+              ref={fileInputRef}
               type="file"
               accept=".pdf,.docx,.txt"
               multiple
-              onChange={(event) =>
-                setSelectedFiles(Array.from(event.target.files || []))
-              }
               className="hidden"
+              onChange={(event) => {
+                if (event.target.files?.length) addFiles(event.target.files);
+                event.target.value = "";
+              }}
             />
-          </label>
 
-          {/* Selected files */}
-          {selectedFiles.length > 0 && (
-            <div className="space-y-2">
-              <p className="text-xs font-medium text-gray-400">
-                Selected files ({selectedFiles.length})
-              </p>
+            {/* Queue */}
+            {queue.length > 0 && (
+              <ul className="mt-4 space-y-2">
+                {queue.map((item) => {
+                  const kind = fileKind(item.file.name);
+                  return (
+                    <li
+                      key={item.id}
+                      className={`row-in flex items-center gap-3 rounded-lg border px-3 py-2.5 transition-colors ${
+                        item.status === "error"
+                          ? "border-[#F07167]/25 bg-[#F07167]/[0.05]"
+                          : item.status === "done"
+                            ? "border-[#7FD1A0]/25 bg-[#7FD1A0]/[0.05]"
+                            : "border-white/[0.06] bg-[#0E1420]"
+                      }`}
+                    >
+                      <span
+                        className={`flex size-8 shrink-0 items-center justify-center rounded-md border text-[10px] font-semibold ${kind.tint}`}
+                      >
+                        {kind.label}
+                      </span>
 
-              {selectedFiles.map((file, index) => (
-                <div
-                  key={`${file.name}-${index}`}
-                  className="flex items-center justify-between gap-3 rounded-lg border border-white/[0.06] bg-[#0b0d11] p-3"
-                >
-                  <div className="flex min-w-0 items-center gap-3">
-                    <FileText className="size-5 shrink-0 text-gray-400" />
-                    <span className="truncate text-sm text-gray-200">
-                      {file.name}
-                    </span>
-                  </div>
+                      <div className="min-w-0 flex-1">
+                        <p
+                          className="truncate text-sm"
+                          title={item.file.name}
+                        >
+                          {item.file.name}
+                        </p>
+                        <p
+                          className={`truncate text-xs ${
+                            item.status === "error"
+                              ? "text-[#F4A09A]"
+                              : "text-[#5D667A]"
+                          }`}
+                        >
+                          {item.status === "error"
+                            ? item.error
+                            : item.status === "uploading"
+                              ? "Uploading…"
+                              : item.status === "done"
+                                ? "Uploaded"
+                                : formatFileSize(item.file.size)}
+                        </p>
+                      </div>
 
-                  <span className="shrink-0 text-xs text-gray-500">
-                    {formatFileSize(String(file.size))}
-                  </span>
+                      {item.status === "uploading" ? (
+                        <Loader2 className="size-4 shrink-0 animate-spin text-[#E8C468]" />
+                      ) : item.status === "done" ? (
+                        <Check className="size-4 shrink-0 text-[#7FD1A0]" />
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => removeFromQueue(item.id)}
+                          disabled={uploading}
+                          aria-label={`Remove ${item.file.name}`}
+                          className={`flex size-7 shrink-0 items-center justify-center rounded-md text-[#8B94A7] transition-colors hover:bg-white/[0.06] hover:text-white disabled:opacity-40 ${focusRing}`}
+                        >
+                          <X className="size-3.5" />
+                        </button>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+
+            <button
+              type="button"
+              onClick={handleUpload}
+              disabled={uploading || pendingCount === 0}
+              className={`mt-4 flex h-10 w-full items-center justify-center gap-2 rounded-lg bg-[#E8C468] text-sm font-semibold text-[#1A1405] transition-all duration-150 hover:bg-[#F0D07A] active:scale-[0.99] disabled:cursor-not-allowed disabled:bg-white/[0.06] disabled:text-[#5D667A] ${focusRing}`}
+            >
+              {uploading ? (
+                <>
+                  <Loader2 className="size-4 animate-spin" />
+                  Uploading…
+                </>
+              ) : pendingCount > 0 ? (
+                `Upload ${pendingCount} file${pendingCount === 1 ? "" : "s"}`
+              ) : (
+                "Upload"
+              )}
+            </button>
+          </section>
+
+          {/* Library */}
+          <section className="overflow-hidden rounded-2xl border border-white/[0.07] bg-[#141B2A]">
+            <div className="flex flex-col gap-3 border-b border-white/[0.06] p-4 sm:flex-row sm:items-center sm:justify-between sm:p-5">
+              <div>
+                <h3 className="text-[15px] font-semibold">Library</h3>
+                <p className="mt-0.5 text-[13px] text-[#8B94A7]">
+                  {loading
+                    ? "Loading…"
+                    : `${documents.length} file${documents.length === 1 ? "" : "s"}`}
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <div className="relative flex-1 sm:w-64 sm:flex-none">
+                  <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[#5D667A]" />
+                  <input
+                    type="text"
+                    placeholder="Search by name"
+                    value={search}
+                    onChange={(event) => setSearch(event.target.value)}
+                    aria-label="Search documents"
+                    className="h-9 w-full rounded-lg border border-white/[0.08] bg-[#0E1420] pl-9 pr-3 text-sm outline-none transition-colors placeholder:text-[#5D667A] focus:border-[#E8C468]/45"
+                  />
                 </div>
-              ))}
-            </div>
-          )}
 
-          <button
-            type="button"
-            onClick={handleUpload}
-            disabled={uploading || selectedFiles.length === 0}
-            className="flex items-center justify-center gap-2 rounded-lg bg-white px-5 py-2.5 text-sm font-semibold text-black transition hover:bg-gray-200 disabled:cursor-not-allowed disabled:opacity-30"
-          >
-            <Upload className="size-4" />
-            {uploading ? "Uploading..." : "Upload Documents"}
-          </button>
-        </section>
-
-        {/* Documents table */}
-        <section className="overflow-hidden rounded-2xl border border-white/[0.08] bg-[#12161e]">
-
-          {/* Table header */}
-          <div className="flex flex-col gap-4 border-b border-white/[0.08] p-5 md:flex-row md:items-center md:justify-between">
-
-            <div>
-              <h3 className="font-semibold text-white">
-                Uploaded Documents
-              </h3>
-              <p className="mt-1 text-sm text-gray-500">
-                {documents.length} document(s) available
-              </p>
+                <button
+                  type="button"
+                  onClick={() => void fetchDocuments()}
+                  disabled={refreshing || loading}
+                  aria-label="Refresh list"
+                  title="Refresh list"
+                  className={`flex size-9 shrink-0 items-center justify-center rounded-lg border border-white/[0.08] text-[#8B94A7] transition-colors hover:bg-white/[0.04] hover:text-white disabled:opacity-50 ${focusRing}`}
+                >
+                  <RefreshCw
+                    className={`size-4 ${refreshing ? "animate-spin" : ""}`}
+                  />
+                </button>
+              </div>
             </div>
 
-            <div className="relative w-full md:max-w-xs">
-              <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-gray-500" />
-
-              <input
-                type="text"
-                placeholder="Search documents..."
-                value={search}
-                onChange={(event) => setSearch(event.target.value)}
-                className="h-10 w-full rounded-lg border border-white/10 bg-[#0b0d11] pl-9 pr-3 text-sm text-white outline-none placeholder:text-gray-600 focus:border-white/25 focus:ring-1 focus:ring-white/10"
-              />
+            {/* Column labels (desktop) */}
+            <div className="hidden grid-cols-[minmax(0,1fr)_64px_80px_112px_112px_116px] gap-4 border-b border-white/[0.06] px-5 py-2.5 text-xs font-medium text-[#5D667A] md:grid">
+              <span>Name</span>
+              <span>Type</span>
+              <span>Size</span>
+              <span>Status</span>
+              <span>Added</span>
+              <span className="text-right">Actions</span>
             </div>
-          </div>
 
-          {/* Table */}
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[850px] text-left text-sm">
+            {loading ? (
+              <ul className="divide-y divide-white/[0.05]">
+                {Array.from({ length: 4 }).map((_, i) => (
+                  <li key={i} className="flex items-center gap-3 px-5 py-4">
+                    <div className="size-9 animate-pulse rounded-lg bg-white/[0.06]" />
+                    <div className="flex-1 space-y-2">
+                      <div className="h-3 w-1/2 animate-pulse rounded bg-white/[0.06]" />
+                      <div className="h-2.5 w-1/4 animate-pulse rounded bg-white/[0.04]" />
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            ) : visibleDocuments.length === 0 ? (
+              <div className="flex flex-col items-center px-6 py-16 text-center">
+                <div className="flex size-12 items-center justify-center rounded-full bg-white/[0.05]">
+                  <FileText className="size-5 text-[#8B94A7]" />
+                </div>
 
-              <thead className="bg-white/[0.025]">
-                <tr className="text-xs uppercase tracking-wider text-gray-500">
-                  <th className="px-5 py-4 font-medium">Document</th>
-                  <th className="px-5 py-4 font-medium">Type</th>
-                  <th className="px-5 py-4 font-medium">Size</th>
-                  <th className="px-5 py-4 font-medium">Status</th>
-                  <th className="px-5 py-4 font-medium">Uploaded</th>
-                  <th className="px-5 py-4 text-right font-medium">Actions</th>
-                </tr>
-              </thead>
-
-              <tbody className="divide-y divide-white/[0.06]">
-
-                {loading ? (
-                  <tr>
-                    <td
-                      colSpan={6}
-                      className="px-5 py-12 text-center text-gray-500"
+                {documents.length === 0 ? (
+                  <>
+                    <p className="mt-4 text-sm font-medium">No documents yet</p>
+                    <p className="mt-1 max-w-xs text-[13px] leading-6 text-[#8B94A7]">
+                      Add a PDF, Word or text file to start asking questions
+                      about it.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => fileInputRef.current?.click()}
+                      className={`mt-5 flex h-9 items-center gap-2 rounded-lg border border-white/[0.1] px-3.5 text-sm transition-colors hover:bg-white/[0.05] ${focusRing}`}
                     >
-                      <RefreshCw className="mx-auto mb-3 size-5 animate-spin" />
-                      Loading documents...
-                    </td>
-                  </tr>
-                ) : filteredDocuments.length === 0 ? (
-                  <tr>
-                    <td
-                      colSpan={6}
-                      className="px-5 py-12 text-center"
-                    >
-                      <File className="mx-auto mb-3 size-8 text-gray-600" />
-                      <p className="text-sm text-gray-400">
-                        No documents found.
-                      </p>
-                      <p className="mt-1 text-xs text-gray-600">
-                        Upload a document to get started.
-                      </p>
-                    </td>
-                  </tr>
+                      <Upload className="size-4" />
+                      Choose files
+                    </button>
+                  </>
                 ) : (
-                  filteredDocuments.map((document) => (
-                    <tr
-                      key={document.id}
-                      className="transition hover:bg-white/[0.025]"
+                  <>
+                    <p className="mt-4 text-sm font-medium">
+                      No files match &ldquo;{search.trim()}&rdquo;
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => setSearch("")}
+                      className={`mt-3 rounded-md px-2 py-1 text-[13px] text-[#E8C468] transition-colors hover:bg-[#E8C468]/10 ${focusRing}`}
                     >
-                      <td className="px-5 py-4">
-                        <div className="flex items-center gap-3">
-                          <div className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-white/[0.06] bg-[#202631]">
-                            <FileText className="size-4 text-gray-300" />
-                          </div>
-
-                          <span className="max-w-[250px] truncate font-medium text-gray-200">
-                            {document.filename}
-                          </span>
-                        </div>
-                      </td>
-
-                      <td className="px-5 py-4 text-xs font-medium text-gray-400">
-                        {formatFileType(document.file_type)}
-                      </td>
-
-                      <td className="px-5 py-4 text-gray-400">
-                        {formatFileSize(document.file_size)}
-                      </td>
-
-                      <td className="px-5 py-4">
-                        <span className="inline-flex rounded-full border border-yellow-500/20 bg-yellow-500/10 px-2.5 py-1 text-xs font-medium text-yellow-400">
-                          {document.status}
-                        </span>
-                      </td>
-
-                      <td className="px-5 py-4 text-gray-400">
-                        {new Date(document.created_at).toLocaleDateString()}
-                      </td>
-
-                      <td className="px-5 py-4">
-                        <div className="flex justify-end gap-2">
-
-                          <button
-                            type="button"
-                            onClick={() => handleView(document)}
-                            title="View document"
-                            className="flex size-9 items-center justify-center rounded-lg border border-white/10 text-gray-400 transition hover:bg-white/10 hover:text-white"
-                          >
-                            <Eye className="size-4" />
-                          </button>
-
-                          <button
-                            type="button"
-                            onClick={() => handleRead(document)}
-                            title="Read document"
-                            className="flex size-9 items-center justify-center rounded-lg border border-white/10 text-gray-400 transition hover:bg-white/10 hover:text-white"
-                          >
-                            <BookOpen className="size-4" />
-                          </button>
-
-                          <button
-                            type="button"
-                            onClick={() =>
-                              handleDelete(document.id, document.filename)
-                            }
-                            title="Delete document"
-                            className="flex size-9 items-center justify-center rounded-lg border border-red-500/20 text-red-400 transition hover:bg-red-500/10 hover:text-red-300"
-                          >
-                            <Trash2 className="size-4" />
-                          </button>
-
-                        </div>
-                      </td>
-                    </tr>
-                  ))
+                      Clear search
+                    </button>
+                  </>
                 )}
+              </div>
+            ) : (
+              <ul className="divide-y divide-white/[0.05]">
+                {visibleDocuments.map((document) => {
+                  const kind = fileKind(document.file_type);
+                  const status = statusStyle(document.status);
+                  const isDeleting = deletingId === document.id;
 
-              </tbody>
-            </table>
-          </div>
-        </section>
+                  return (
+                    <li
+                      key={document.id}
+                      className={`row-in grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-4 py-3.5 transition-all duration-200 hover:bg-white/[0.02] sm:px-5 md:grid-cols-[minmax(0,1fr)_64px_80px_112px_112px_116px] md:gap-4 ${
+                        isDeleting ? "pointer-events-none opacity-40" : ""
+                      }`}
+                    >
+                      {/* Name */}
+                      <div className="flex min-w-0 items-center gap-3">
+                        <div
+                          className={`flex size-9 shrink-0 items-center justify-center rounded-lg border ${kind.tint}`}
+                        >
+                          <FileText className="size-4" />
+                        </div>
+                        <div className="min-w-0">
+                          <p
+                            className="truncate text-sm font-medium"
+                            title={document.filename}
+                          >
+                            {document.filename}
+                          </p>
+                          {/* Meta (mobile) */}
+                          <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-[#8B94A7] md:hidden">
+                            <span>{kind.label}</span>
+                            <span>{formatFileSize(document.file_size)}</span>
+                            <span>{formatDate(document.created_at)}</span>
+                            <span
+                              className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 ${status.cls}`}
+                            >
+                              <span
+                                className={`size-1.5 rounded-full ${status.dot}`}
+                              />
+                              {status.label}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
 
+                      {/* Desktop columns */}
+                      <span className="hidden text-xs font-medium text-[#B7BECC] md:block">
+                        {kind.label}
+                      </span>
+                      <span className="hidden text-sm text-[#8B94A7] md:block">
+                        {formatFileSize(document.file_size)}
+                      </span>
+                      <span className="hidden md:block">
+                        <span
+                          className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium ${status.cls}`}
+                        >
+                          <span
+                            className={`size-1.5 rounded-full ${status.dot}`}
+                          />
+                          {status.label}
+                        </span>
+                      </span>
+                      <span className="hidden text-sm text-[#8B94A7] md:block">
+                        {formatDate(document.created_at)}
+                      </span>
+
+                      {/* Actions */}
+                      <div className="flex justify-end gap-1">
+                        <button
+                          type="button"
+                          onClick={() => handleView(document)}
+                          title="Open file"
+                          aria-label={`Open ${document.filename}`}
+                          className={`flex size-8 items-center justify-center rounded-md text-[#8B94A7] transition-colors hover:bg-white/[0.07] hover:text-white ${focusRing}`}
+                        >
+                          <Eye className="size-4" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleRead(document)}
+                          title="Read in browser"
+                          aria-label={`Read ${document.filename}`}
+                          className={`flex size-8 items-center justify-center rounded-md text-[#8B94A7] transition-colors hover:bg-white/[0.07] hover:text-white ${focusRing}`}
+                        >
+                          <BookOpen className="size-4" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDelete(document)}
+                          title="Delete"
+                          aria-label={`Delete ${document.filename}`}
+                          className={`flex size-8 items-center justify-center rounded-md text-[#8B94A7] transition-colors hover:bg-[#F07167]/10 hover:text-[#F4A09A] ${focusRing}`}
+                        >
+                          {isDeleting ? (
+                            <Loader2 className="size-4 animate-spin" />
+                          ) : (
+                            <Trash2 className="size-4" />
+                          )}
+                        </button>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </section>
+        </div>
       </div>
     </main>
   );

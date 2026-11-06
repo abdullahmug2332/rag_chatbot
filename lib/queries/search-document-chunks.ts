@@ -14,7 +14,7 @@ export type SearchResult = {
 export async function searchDocumentChunks(
   question: string,
   limit: number = 5,
-  similarityThreshold: number = 0.4,
+  similarityThreshold: number = 0.25,
 ): Promise<SearchResult[]> {
   const query = question.trim();
 

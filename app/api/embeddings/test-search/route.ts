@@ -16,8 +16,11 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const results = await searchDocumentChunks(question);
-
+    const results = await searchDocumentChunks(
+  question,
+  5,
+  0.25
+);
     return NextResponse.json({
       message: "Semantic search completed successfully",
       totalResults: results.length,

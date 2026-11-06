@@ -1,4 +1,3 @@
-
 import { readFile } from "fs/promises";
 import { PDFParse } from "pdf-parse";
 
@@ -29,7 +28,11 @@ export async function extractPdfText(
 
     const pages: ExtractedPdfPage[] = result.pages.map((page) => ({
       pageNumber: page.num,
-      text: page.text.trim(),
+      text: page.text
+        .replace(/\r\n/g, "\n")
+        .replace(/[ \t]+/g, " ")
+        .replace(/\n{3,}/g, "\n\n")
+        .trim(),
     }));
 
     const fullText = pages
