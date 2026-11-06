@@ -366,7 +366,7 @@ export default function Home() {
                   if (message.role === "user") {
                     return (
                       <div key={index} className="msg-in flex justify-end">
-                        <div className="max-w-[85%] whitespace-pre-wrap break-words rounded-2xl rounded-br-md bg-[#1E2840] px-4 py-2.5 text-[15px] leading-7">
+                        <div className="max-w-[85%] whitespace-pre-wrap break-words rounded-2xl rounded-br-none bg-[#1E2840] px-4 py-2.5 text-[15px] leading-7">
                           {message.content}
                         </div>
                       </div>
@@ -375,8 +375,8 @@ export default function Home() {
 
                   return (
                     <div key={index} className="msg-in group flex gap-3.5">
-                      <div className="mt-1 flex size-7 shrink-0 items-center justify-center rounded-md border border-[#E8C468]/25 bg-[#E8C468]/10 text-[#E8C468]">
-                        <BookOpen className="size-3.5" />
+                      <div className="mt-1 flex size-7 shrink-0 items-center justify-center rounded-md  text-[#E8C468]">
+                        <PiRobotThin className="size-7" />
                       </div>
 
                       <div className="min-w-0 flex-1">
@@ -392,7 +392,7 @@ export default function Home() {
                         ) : (
                           <div
                             className="
-                              break-words text-[15px] leading-7 text-[#D5DAE3]
+                              break-words text-[15px] leading-7 text-[#D5DAE3]  p-3 rounded-2xl rounded-tl-none bg-[#325e69]
                               [&>*:first-child]:mt-0 [&>*:last-child]:mb-0
                               [&_h1]:mb-3 [&_h1]:mt-6 [&_h1]:text-xl [&_h1]:font-semibold [&_h1]:text-white
                               [&_h2]:mb-2 [&_h2]:mt-6 [&_h2]:text-lg [&_h2]:font-semibold [&_h2]:text-white
