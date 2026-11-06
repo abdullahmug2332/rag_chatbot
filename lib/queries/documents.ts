@@ -57,3 +57,18 @@ export async function getDocumentById(id: string) {
 
   return result.rows[0] ?? null;
 }
+
+export async function updateDocumentStatus(
+  id: string,
+  status: string,
+) {
+  const result = await pool.query(
+    `UPDATE documents
+     SET status = $1
+     WHERE id = $2
+     RETURNING *`,
+    [status, id],
+  );
+
+  return result.rows[0] as Document | undefined;
+}
