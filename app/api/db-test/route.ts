@@ -17,7 +17,7 @@ export async function GET() {
     return NextResponse.json({
       success: true,
       data: result.rows,
-      message: "PostgreSQL connected successfully!",
+      message: `PostgreSQL connected successfully! Found ${result.rows.length} rows. `,
       // Added ?. to prevent a crash when rows[0] is undefined
       databaseTime: result.rows[0]?.current_time || null, 
     });
